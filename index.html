@@ -1,0 +1,718 @@
+
+```html
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Selmaz Planner — by Martia</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['IRANSans', 'Vazirmatn', 'Inter', 'ui-sans-serif', 'system-ui'],
+          },
+          colors: {
+            brand: {
+              50: '#fff7f9', 100:'#ffeaf1', 200:'#ffd0e1', 300:'#ffb0cc', 400:'#ff8ab3', 500:'#ff6199', 600:'#e04e86', 700:'#bc3c70', 800:'#8b2a53', 900:'#641f3c'
+            }
+          },
+          boxShadow: {
+            soft: '0 10px 30px rgba(0,0,0,.06)'
+          },
+          backgroundImage: {
+            floral: "radial-gradient(1200px 600px at 100% -10%, rgba(255, 230, 240,.7), transparent 60%), radial-gradient(1000px 500px at 0% 110%, rgba(204, 236, 255,.7), transparent 60%), radial-gradient(700px 400px at 50% -20%, rgba(220, 255, 230,.6), transparent 60%), url('data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'160\' height=\'160\' viewBox=\'0 0 160 160\'><g fill=\'none\' stroke=\'%23ff9ac2\' opacity=\'.15\'><circle cx=\'40\' cy=\'40\' r=\'26\'/><circle cx=\'120\' cy=\'120\' r=\'26\'/><path d=\'M10 80c22-22 48-22 70 0 22 22 48 22 70 0\'/></g></svg>')"
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Optional Persian friendly font fallbacks */
+    @font-face{font-family:IRANSans;src:local('IRANSans'), local('Vazirmatn');font-display:swap}
+    html, body { height:100%; }
+    .glass { backdrop-filter: blur(10px); background: rgba(255,255,255,.65); }
+  </style>
+  <!-- React + Babel for single-file JSX -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="min-h-screen bg-floral text-gray-800">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // ---------- Utilities ----------
+    const todayKey = (d = new Date()) => d.toISOString().slice(0,10);
+    const uid = () => Math.random().toString(36).slice(2,10);
+    const download = (filename, text) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], {type:'application/json'}));
+      a.download = filename; a.click(); URL.revokeObjectURL(a.href);
+    };
+
+    // ---------- Storage Hook ----------
+    function usePersistedState(key, initial) {
+      const [state, setState] = useState(() => {
+        try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : (typeof initial === 'function' ? initial() : initial); }
+        catch(e){ return typeof initial === 'function' ? initial() : initial }
+      });
+      useEffect(()=>{ localStorage.setItem(key, JSON.stringify(state)); }, [key, state]);
+      return [state, setState];
+    }
+
+    // ---------- Default Data ----------
+    const defaultData = () => ({
+      user: { name: 'سلماز' },
+      tasks: [], // {id, title, date, priority, tags:[], done, notes}
+      notes: [], // {id, title, content, date}
+      habits: { list: ['ورزش','مطالعه','مدیتیشن'], checks: {} }, // checks[date][habit]=true
+      mood: {}, // mood[date] = 1..5
+      water: {}, // water[date] = cups
+      sleep: [], // {date, hours}
+      meals: {}, // meals[date] = {breakfast, lunch, dinner}
+      expenses: [], // {id, date, title, amount}
+      goals: [], // {id, title, targetDate, keyResults:[], progress:0}
+      timer: { pomodoro: 25, short: 5, long: 15 },
+      settings: { theme: 'pastel', floral: true }
+    });
+
+    // ---------- App ----------
+    function App(){
+      const [db, setDb] = usePersistedState('selmaz_planner', defaultData);
+      const [page, setPage] = useState('dashboard');
+      const [query, setQuery] = useState('');
+
+      // Quick capture (Ctrl+K)
+      useEffect(()=>{
+        const onKey = (e)=>{
+          if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='k'){
+            e.preventDefault();
+            const t = prompt('وظیفه سریع:');
+            if(t){
+              setDb(v=>({...v, tasks:[{id:uid(), title:t, date:todayKey(), priority:'M', tags:[], done:false}, ...v.tasks]}));
+            }
+          }
+        };
+        window.addEventListener('keydown', onKey); return ()=>window.removeEventListener('keydown', onKey);
+      },[]);
+
+      const pages = [
+        {id:'dashboard', label:'داشبورد'},
+        {id:'day', label:'برنامه روزانه'},
+        {id:'week', label:'برنامه هفتگی'},
+        {id:'habits', label:'عادت‌ها'},
+        {id:'focus', label:'تمرکز (پومودورو)'},
+        {id:'journal', label:'یادداشت و ژورنال'},
+        {id:'health', label:'حال‌واحوال / آب / خواب'},
+        {id:'goals', label:'اهداف و اولویت'},
+        {id:'calendar', label:'تقویم ماهانه'},
+        {id:'settings', label:'تنظیمات و پشتیبان'}
+      ];
+
+      const filteredTasks = useMemo(()=> db.tasks.filter(t => (
+        !query || t.title.includes(query) || (t.tags||[]).some(x=>x.includes(query)) || (t.notes||'').includes(query)
+      )), [db.tasks, query]);
+
+      // Notification helper
+      const notify = (title, opts) => { try { if(Notification && Notification.permission==='granted'){ new Notification(title, opts);} } catch(e){} };
+      useEffect(()=>{ try{ if(Notification && Notification.permission==='default'){ Notification.requestPermission(); } }catch(e){} },[]);
+
+      const onImport = async (file) => {
+        const text = await file.text();
+        try { const data = JSON.parse(text); setDb(data); alert('بازیابی انجام شد.'); } catch(e){ alert('فایل نامعتبر است.'); }
+      };
+
+      return (
+        <div className="min-h-screen p-4 md:p-8">
+          <div className="max-w-7xl mx-auto grid grid-cols-12 gap-4">
+            {/* Sidebar */}
+            <aside className="col-span-12 md:col-span-3 lg:col-span-2 glass rounded-2xl shadow-soft p-4 h-fit sticky top-4">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-300 to-brand-500"/>
+                <div>
+                  <div className="font-bold">Selmaz Planner</div>
+                  <div className="text-xs text-gray-500">by Martia</div>
+                </div>
+              </div>
+              <nav className="space-y-1">
+                {pages.map(p=> (
+                  <button key={p.id} onClick={()=>setPage(p.id)} className={`w-full text-right px-3 py-2 rounded-xl hover:bg-white transition ${page===p.id? 'bg-white shadow-soft font-bold' : ''}`}>{p.label}</button>
+                ))}
+              </nav>
+              <div className="mt-4 text-xs text-gray-500">میانبر: <kbd className="px-1 py-0.5 bg-gray-100 rounded">Ctrl</kbd>+<kbd className="px-1 py-0.5 bg-gray-100 rounded">K</kbd> ثبت سریع</div>
+            </aside>
+
+            {/* Main */}
+            <main className="col-span-12 md:col-span-9 lg:col-span-10">
+              {/* Topbar */}
+              <div className="glass rounded-2xl p-4 shadow-soft flex flex-col md:flex-row md:items-center gap-3 mb-4">
+                <div className="flex-1 flex items-center gap-2">
+                  <input className="w-full md:w-2/3 bg-white/70 rounded-xl px-3 py-2 focus:outline-none" placeholder="جستجو در کارها و یادداشت‌ها…" value={query} onChange={e=>setQuery(e.target.value)} />
+                </div>
+                <div className="text-sm text-gray-600">سلام، {db.user.name} ✨ — {new Date().toLocaleDateString('fa-IR', {weekday:'long', year:'numeric', month:'long', day:'numeric'})}</div>
+              </div>
+
+              {page==='dashboard' && <Dashboard db={db} setDb={setDb} tasks={filteredTasks} go={setPage} />}
+              {page==='day' && <DayPlanner db={db} setDb={setDb} />}
+              {page==='week' && <WeekPlanner db={db} setDb={setDb} />}
+              {page==='habits' && <Habits db={db} setDb={setDb} />}
+              {page==='focus' && <Focus db={db} setDb={setDb} notify={notify} />}
+              {page==='journal' && <Journal db={db} setDb={setDb} />}
+              {page==='health' && <Health db={db} setDb={setDb} />}
+              {page==='goals' && <Goals db={db} setDb={setDb} />}
+              {page==='calendar' && <CalendarPage db={db} setDb={setDb} />}
+              {page==='settings' && <Settings db={db} setDb={setDb} download={download} onImport={onImport} />}
+
+            </main>
+          </div>
+        </div>
+      );
+    }
+
+    // ---------- Components ----------
+
+    function SectionCard({title, children, actions}){
+      return (
+        <section className="glass rounded-2xl shadow-soft p-4">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="font-bold text-lg">{title}</h3>
+            <div className="flex gap-2">{actions}</div>
+          </div>
+          <div>{children}</div>
+        </section>
+      )
+    }
+
+    // Dashboard: overview widgets
+    function Dashboard({db, setDb, tasks, go}){
+      const today = todayKey();
+      const todaysTasks = tasks.filter(t=>t.date===today).slice(0,6);
+      const doneCount = tasks.filter(t=>t.done).length;
+      const progress = tasks.length ? Math.round(doneCount*100/tasks.length) : 0;
+
+      return (
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <SectionCard title="پیشرفت امروز">
+            <div className="space-y-3">
+              <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-brand-300 to-brand-500" style={{width: progress+'%'}}/>
+              </div>
+              <div className="text-sm text-gray-600">{doneCount} از {tasks.length} کار انجام شده</div>
+              <button className="btn" onClick={()=>go('day')}>رفتن به برنامه روزانه</button>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="کارهای امروز">
+            <TaskEditor db={db} setDb={setDb} defaultDate={today} compact />
+            <ul className="mt-3 space-y-2">
+              {todaysTasks.map(t=> <TaskItem key={t.id} t={t} setDb={setDb} />)}
+              {todaysTasks.length===0 && <div className="text-sm text-gray-500">امروز کاری ثبت نشده.</div>}
+            </ul>
+          </SectionCard>
+
+          <SectionCard title="عادت‌ها">
+            <HabitsQuick db={db} setDb={setDb} />
+          </SectionCard>
+
+          <SectionCard title="پومودورو سریع">
+            <FocusQuick db={db} setDb={setDb} />
+          </SectionCard>
+
+          <SectionCard title="حال امروز">
+            <MoodQuick db={db} setDb={setDb} />
+          </SectionCard>
+
+          <SectionCard title="یادداشت اخیر">
+            <JournalQuick db={db} setDb={setDb} />
+          </SectionCard>
+        </div>
+      )
+    }
+
+    // ---- Tasks ----
+    function TaskEditor({db, setDb, defaultDate, compact}){
+      const [title, setTitle] = useState('');
+      const [date, setDate] = useState(defaultDate || todayKey());
+      const [priority, setPriority] = useState('M');
+      const [tags, setTags] = useState('');
+      const add = ()=>{
+        if(!title.trim()) return;
+        setDb(v=>({...v, tasks:[{id:uid(), title, date, priority, tags: tags? tags.split(',').map(s=>s.trim()) : [], done:false}, ...v.tasks]}));
+        setTitle('');
+      };
+      return (
+        <div className={`grid ${compact? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-6'} gap-2`}>
+          <input className="px-3 py-2 rounded-xl bg-white/70" placeholder="کار جدید…" value={title} onChange={e=>setTitle(e.target.value)} />
+          <input type="date" className="px-3 py-2 rounded-xl bg-white/70" value={date} onChange={e=>setDate(e.target.value)} />
+          <select className="px-3 py-2 rounded-xl bg-white/70" value={priority} onChange={e=>setPriority(e.target.value)}>
+            <option value="H">اولویت زیاد</option>
+            <option value="M">متوسط</option>
+            <option value="L">کم</option>
+          </select>
+          {!compact && <input className="px-3 py-2 rounded-xl bg-white/70" placeholder="تگ‌ها با ," value={tags} onChange={e=>setTags(e.target.value)} />}
+          <button className="px-3 py-2 rounded-xl bg-brand-500 hover:bg-brand-600 text-white" onClick={add}>افزودن</button>
+        </div>
+      )
+    }
+
+    function TaskItem({t, setDb}){
+      const toggle = ()=> setDb(v=>({...v, tasks: v.tasks.map(x=> x.id===t.id? {...x, done:!x.done}:x)}));
+      const del = ()=> { if(confirm('حذف شود؟')) setDb(v=>({...v, tasks: v.tasks.filter(x=>x.id!==t.id)})); }
+      const up = ()=> setDb(v=>{ const i=v.tasks.findIndex(x=>x.id===t.id); if(i<=0) return v; const arr=[...v.tasks]; [arr[i-1],arr[i]]=[arr[i],arr[i-1]]; return {...v,tasks:arr}; });
+      return (
+        <li className={`flex items-start gap-2 p-2 bg-white/70 rounded-xl ${t.done?'opacity-60 line-through':''}`}>
+          <input type="checkbox" checked={!!t.done} onChange={toggle} className="mt-1" />
+          <div className="flex-1">
+            <div className="font-medium">{t.title}</div>
+            <div className="text-xs text-gray-500">{t.date} • اولویت {t.priority} {t.tags?.length? '• '+t.tags.join('، '): ''}</div>
+          </div>
+          <button title="بالا" onClick={up} className="text-xs px-2 py-1 rounded-lg bg-gray-100">↑</button>
+          <button title="حذف" onClick={del} className="text-xs px-2 py-1 rounded-lg bg-red-50 text-red-600">حذف</button>
+        </li>
+      )
+    }
+
+    function DayPlanner({db, setDb}){
+      const today = todayKey();
+      const [selDate, setSelDate] = useState(today);
+      const tasks = db.tasks.filter(t=>t.date===selDate);
+      return (
+        <div className="space-y-4">
+          <SectionCard title={`برنامه روزانه - ${selDate}`} actions={
+            <div className="flex gap-2">
+              <input type="date" value={selDate} onChange={e=>setSelDate(e.target.value)} className="px-2 py-1 rounded-lg bg-white/70" />
+              <button onClick={()=>window.print()} className="px-3 py-2 rounded-xl bg-gray-800 text-white">پرینت</button>
+            </div>
+          }>
+            <TaskEditor db={db} setDb={setDb} defaultDate={selDate} />
+            <ul className="mt-3 space-y-2">
+              {tasks.map(t=> <TaskItem key={t.id} t={t} setDb={setDb} />)}
+              {tasks.length===0 && <div className="text-sm text-gray-500">برای این روز کاری ثبت نشده.</div>}
+            </ul>
+          </SectionCard>
+
+          <SectionCard title="وعده‌های غذایی">
+            <Meals date={selDate} db={db} setDb={setDb} />
+          </SectionCard>
+
+          <SectionCard title="هزینه‌های سریع">
+            <ExpensesQuick date={selDate} db={db} setDb={setDb} />
+          </SectionCard>
+        </div>
+      )
+    }
+
+    function Meals({date, db, setDb}){
+      const data = db.meals[date] || {breakfast:'', lunch:'', dinner:''};
+      const set = (k,val)=> setDb(v=> ({...v, meals: {...v.meals, [date]: {...(v.meals[date]||{}), [k]:val}} }));
+      return (
+        <div className="grid md:grid-cols-3 gap-2">
+          {['breakfast','lunch','dinner'].map(k=> (
+            <div key={k} className="bg-white/70 rounded-xl p-3">
+              <div className="text-sm text-gray-500">{k==='breakfast'?'صبحانه':k==='lunch'?'نهار':'شام'}</div>
+              <input className="w-full mt-2 px-3 py-2 rounded-lg bg-gray-50" value={data[k]} onChange={e=>set(k, e.target.value)} placeholder="بنویس…" />
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    function ExpensesQuick({date, db, setDb}){
+      const [title, setTitle] = useState('');
+      const [amount, setAmount] = useState('');
+      const add = ()=>{
+        if(!title||!amount) return;
+        setDb(v=>({...v, expenses:[{id:uid(), date, title, amount: Number(amount)}, ...v.expenses]}));
+        setTitle(''); setAmount('');
+      };
+      const items = db.expenses.filter(e=>e.date===date);
+      const total = items.reduce((s,e)=>s+e.amount,0);
+      return (
+        <div>
+          <div className="grid md:grid-cols-3 gap-2">
+            <input className="px-3 py-2 rounded-lg bg-white/70" placeholder="عنوان" value={title} onChange={e=>setTitle(e.target.value)} />
+            <input className="px-3 py-2 rounded-lg bg-white/70" placeholder="مبلغ" inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value)} />
+            <button className="px-3 py-2 rounded-lg bg-brand-500 text-white" onClick={add}>افزودن</button>
+          </div>
+          <ul className="mt-3 space-y-2">
+            {items.map(i=> (
+              <li key={i.id} className="flex justify-between bg-white/70 p-2 rounded-lg"><span>{i.title}</span><span>{i.amount.toLocaleString()}</span></li>
+            ))}
+          </ul>
+          <div className="mt-2 text-sm text-gray-600">جمع امروز: {total.toLocaleString()}</div>
+        </div>
+      )
+    }
+
+    function WeekPlanner({db, setDb}){
+      const startOfWeek = () => {
+        const d = new Date();
+        const day = (d.getDay()+1)%7; // Sun->0 => we map Sat as 6 in fa-IR; keep simple
+        d.setDate(d.getDate()-day);
+        return d;
+      }
+      const days = [...Array(7)].map((_,i)=>{
+        const d = new Date(startOfWeek()); d.setDate(d.getDate()+i); return d;
+      });
+      return (
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {days.map(d=>{
+            const key = todayKey(d);
+            const tasks = db.tasks.filter(t=>t.date===key);
+            return (
+              <SectionCard key={key} title={`${d.toLocaleDateString('fa-IR',{weekday:'long'})} — ${key}`} actions={<button className="text-xs px-2 py-1 bg-gray-800 text-white rounded-lg" onClick={()=>{
+                const t = prompt('کار جدید برای '+key);
+                if(t) setDb(v=>({...v, tasks:[{id:uid(), title:t, date:key, priority:'M', tags:[], done:false}, ...v.tasks]}));
+              }}>+ کار</button>}>
+                <ul className="space-y-2">
+                  {tasks.map(t=> <TaskItem key={t.id} t={t} setDb={setDb} />)}
+                  {tasks.length===0 && <div className="text-sm text-gray-500">کاری ثبت نشده.</div>}
+                </ul>
+              </SectionCard>
+            )
+          })}
+        </div>
+      )
+    }
+
+    // ---- Habits ----
+    function Habits({db, setDb}){
+      const today = todayKey();
+      const [newHabit, setNewHabit] = useState('');
+      const toggle = (date, h) => setDb(v=>{
+        const checks = {...v.habits.checks};
+        const row = {...(checks[date]||{})};
+        row[h] = !row[h];
+        checks[date]=row; return {...v, habits:{...v.habits, checks}};
+      });
+      const addHabit = ()=>{ if(!newHabit.trim()) return; setDb(v=>({...v, habits:{...v.habits, list:[...v.habits.list, newHabit]}})); setNewHabit(''); };
+      const days = [...Array(7)].map((_,i)=>{ const d=new Date(); d.setDate(d.getDate()-i); return todayKey(d); }).reverse();
+      // streaks
+      const streak = (h)=>{ let s=0; for(let i=days.length-1;i>=0;i--){ if(db.habits.checks[days[i]]?.[h]) s++; else break; } return s };
+      return (
+        <div className="space-y-4">
+          <SectionCard title="مدیریت عادت‌ها">
+            <div className="flex gap-2">
+              <input className="px-3 py-2 rounded-xl bg-white/70" placeholder="عادت جدید…" value={newHabit} onChange={e=>setNewHabit(e.target.value)} />
+              <button className="px-3 py-2 rounded-xl bg-brand-500 text-white" onClick={addHabit}>افزودن</button>
+            </div>
+            <div className="text-sm text-gray-500 mt-2">رکورد (streak) هر عادت کنار نام آن نمایش داده می‌شود.</div>
+          </SectionCard>
+          <SectionCard title="پیگیری هفتگی">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr><th className="p-2 text-right">عادت</th>{days.map(d=> <th key={d} className="p-2">{d.slice(5)}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {db.habits.list.map(h=> (
+                    <tr key={h} className="bg-white/60">
+                      <td className="p-2 font-medium">{h} <span className="text-xs text-gray-500">({streak(h)}🔥)</span></td>
+                      {days.map(d=> (
+                        <td key={d} className="p-2 text-center">
+                          <input type="checkbox" checked={!!db.habits.checks[d]?.[h]} onChange={()=>toggle(d,h)} />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    const HabitsQuick = ({db, setDb})=>{
+      const d=todayKey();
+      if(!db.habits.list.length) return <div className="text-sm text-gray-500">عادت ثبت نشده.</div>
+      return (
+        <div className="flex flex-wrap gap-2">
+          {db.habits.list.map(h=> (
+            <button key={h} onClick={()=> setDb(v=>{ const row={...(v.habits.checks[d]||{})}; row[h]=!row[h]; return {...v, habits:{...v.habits, checks:{...v.habits.checks, [d]:row}}}; })} className={`px-3 py-2 rounded-xl ${db.habits.checks[d]?.[h] ? 'bg-brand-500 text-white':'bg-white/70'}`}>{h}</button>
+          ))}
+        </div>
+      )
+    }
+
+    // ---- Focus / Pomodoro ----
+    function Focus({db, setDb, notify}){
+      return (
+        <div className="grid md:grid-cols-2 gap-4">
+          <SectionCard title="تایمر پومودورو">
+            <Pomodoro db={db} setDb={setDb} notify={notify} />
+          </SectionCard>
+          <SectionCard title="لیست تمرکز امروز">
+            <TaskEditor db={db} setDb={setDb} defaultDate={todayKey()} />
+            <ul className="mt-3 space-y-2">
+              {db.tasks.filter(t=>t.date===todayKey()).map(t=> <TaskItem key={t.id} t={t} setDb={setDb} />)}
+            </ul>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    const FocusQuick = ({db, setDb}) => <Pomodoro compact db={db} setDb={setDb} />
+
+    function Pomodoro({db, setDb, compact, notify}){
+      const [left, setLeft] = useState(db.timer.pomodoro*60);
+      const [mode, setMode] = useState('focus'); // focus/short/long
+      const [running, setRunning] = useState(false);
+      const intervalRef = useRef(null);
+      useEffect(()=>{ setLeft((mode==='focus'?db.timer.pomodoro: mode==='short'? db.timer.short: db.timer.long)*60); },[mode, db.timer])
+      useEffect(()=>{
+        if(!running) return;
+        intervalRef.current = setInterval(()=> setLeft(s=> s>0? s-1:0), 1000);
+        return ()=> clearInterval(intervalRef.current);
+      },[running]);
+      useEffect(()=>{ if(left===0 && running){ setRunning(false); try{ new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg').play(); }catch(e){} if(notify) notify('زمان تمام شد', {body: mode==='focus'? 'وقت استراحت کوتاه' : 'وقت تمرکز'}); } },[left,running]);
+      const mm = String(Math.floor(left/60)).padStart(2,'0');
+      const ss = String(left%60).padStart(2,'0');
+      return (
+        <div className={`flex ${compact? 'flex-col items-center' : 'items-end justify-between'} gap-3`}>
+          <div className="text-5xl font-black tracking-wider">{mm}:{ss}</div>
+          <div className="flex gap-2">
+            {['focus','short','long'].map(m=> (
+              <button key={m} onClick={()=>setMode(m)} className={`px-3 py-2 rounded-xl ${mode===m? 'bg-brand-500 text-white':'bg-white/70'}`}>{m==='focus'? 'تمرکز': m==='short'? 'استراحت کوتاه':'استراحت بلند'}</button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={()=>setRunning(v=>!v)} className="px-4 py-2 rounded-xl bg-gray-800 text-white">{running?'توقف':'شروع'}</button>
+            <button onClick={()=>{ setLeft((mode==='focus'?db.timer.pomodoro: mode==='short'? db.timer.short: db.timer.long)*60); setRunning(false); }} className="px-4 py-2 rounded-xl bg-gray-100">ریست</button>
+          </div>
+        </div>
+      )
+    }
+
+    // ---- Journal / Notes ----
+    function Journal({db, setDb}){
+      const [title, setTitle] = useState('');
+      const [content, setContent] = useState('');
+      const add = ()=>{ if(!title && !content) return; setDb(v=>({...v, notes:[{id:uid(), title, content, date:todayKey()}, ...v.notes]})); setTitle(''); setContent(''); };
+      return (
+        <div className="grid md:grid-cols-2 gap-4">
+          <SectionCard title="یادداشت جدید">
+            <input className="w-full px-3 py-2 rounded-xl bg-white/70 mb-2" placeholder="عنوان" value={title} onChange={e=>setTitle(e.target.value)} />
+            <textarea className="w-full px-3 py-2 rounded-xl bg-white/70 h-40" placeholder="متن…" value={content} onChange={e=>setContent(e.target.value)} />
+            <div className="mt-2"><button className="px-3 py-2 rounded-xl bg-brand-500 text-white" onClick={add}>افزودن</button></div>
+          </SectionCard>
+          <SectionCard title="همه یادداشت‌ها">
+            <ul className="space-y-2">
+              {db.notes.map(n=> (
+                <li key={n.id} className="p-3 bg-white/70 rounded-xl">
+                  <div className="font-bold">{n.title || 'بدون عنوان'}</div>
+                  <div className="text-xs text-gray-500">{n.date}</div>
+                  <p className="mt-1 whitespace-pre-wrap">{n.content}</p>
+                </li>
+              ))}
+              {db.notes.length===0 && <div className="text-sm text-gray-500">یادداشتی وجود ندارد.</div>}
+            </ul>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    const JournalQuick = ({db, setDb}) => {
+      const add = ()=>{
+        const t = prompt('یادداشت سریع:');
+        if(t) setDb(v=>({...v, notes:[{id:uid(), title:t.slice(0,28), content:t, date:todayKey()}, ...v.notes]}))
+      }
+      return <button onClick={add} className="px-3 py-2 rounded-xl bg-gray-800 text-white">+ افزودن</button>
+    }
+
+    // ---- Health (Mood/Water/Sleep) ----
+    function Health({db, setDb}){
+      const d = todayKey();
+      const setMood = (m)=> setDb(v=> ({...v, mood:{...v.mood, [d]:m}}));
+      const setWater = (c)=> setDb(v=> ({...v, water:{...v.water, [d]:c}}));
+      const [hours, setHours] = useState('');
+      const addSleep = ()=>{ if(!hours) return; setDb(v=>({...v, sleep:[{date:d, hours:Number(hours)}, ...v.sleep]})); setHours(''); };
+      return (
+        <div className="grid md:grid-cols-3 gap-4">
+          <SectionCard title="حال امروز">
+            <div className="flex gap-2 text-2xl">
+              {[1,2,3,4,5].map(m=> (
+                <button key={m} onClick={()=>setMood(m)} className={`w-12 h-12 rounded-full flex items-center justify-center ${db.mood[d]===m? 'bg-brand-500 text-white':'bg-white/70'}`}>{['😢','🙁','😐','🙂','😄'][m-1]}</button>
+              ))}
+            </div>
+          </SectionCard>
+
+          <SectionCard title="آب امروز (لیوان)">
+            <div className="flex items-center gap-3">
+              <button className="px-3 py-2 bg-white/70 rounded-xl" onClick={()=> setWater(Math.max(0,(db.water[d]||0)-1))}>-</button>
+              <div className="text-3xl font-bold">{db.water[d]||0}</div>
+              <button className="px-3 py-2 bg-white/70 rounded-xl" onClick={()=> setWater((db.water[d]||0)+1)}>+</button>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="خواب">
+            <div className="flex gap-2">
+              <input className="px-3 py-2 rounded-xl bg-white/70" placeholder="ساعت" inputMode="numeric" value={hours} onChange={e=>setHours(e.target.value)} />
+              <button className="px-3 py-2 rounded-xl bg-brand-500 text-white" onClick={addSleep}>ثبت</button>
+            </div>
+            <ul className="mt-3 text-sm space-y-1">
+              {db.sleep.slice(0,7).map((s,i)=> <li key={i} className="bg-white/60 p-2 rounded-lg">{s.date}: {s.hours} ساعت</li>)}
+            </ul>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    const MoodQuick = ({db, setDb}) => (
+      <div className="flex gap-2">
+        {[1,2,3,4,5].map(m=> (
+          <button key={m} onClick={()=> setDb(v=>({...v, mood:{...v.mood, [todayKey()]:m}}))} className={`w-10 h-10 rounded-full flex items-center justify-center ${db.mood[todayKey()]===m? 'bg-brand-500 text-white':'bg-white/70'}`}>{['😢','🙁','😐','🙂','😄'][m-1]}</button>
+        ))}
+      </div>
+    )
+
+    // ---- Goals / Eisenhower ----
+    function Goals({db, setDb}){
+      const [title, setTitle] = useState('');
+      const [date, setDate] = useState('');
+      const add = ()=>{ if(!title) return; setDb(v=>({...v, goals:[{id:uid(), title, targetDate:date||'—', keyResults:[], progress:0}, ...v.goals]})); setTitle(''); setDate(''); };
+      return (
+        <div className="space-y-4">
+          <SectionCard title="هدف جدید">
+            <div className="grid md:grid-cols-3 gap-2">
+              <input className="px-3 py-2 rounded-xl bg-white/70" placeholder="عنوان هدف…" value={title} onChange={e=>setTitle(e.target.value)} />
+              <input type="date" className="px-3 py-2 rounded-xl bg-white/70" value={date} onChange={e=>setDate(e.target.value)} />
+              <button className="px-3 py-2 rounded-xl bg-brand-500 text-white" onClick={add}>افزودن</button>
+            </div>
+          </SectionCard>
+          <SectionCard title="لیست اهداف">
+            <ul className="space-y-2">
+              {db.goals.map(g=> (
+                <li key={g.id} className="bg-white/70 p-3 rounded-xl">
+                  <div className="flex justify-between items-center">
+                    <div className="font-bold">{g.title}</div>
+                    <div className="text-xs text-gray-600">تا {g.targetDate}</div>
+                  </div>
+                </li>
+              ))}
+              {db.goals.length===0 && <div className="text-sm text-gray-500">هنوز هدفی ثبت نشده.</div>}
+            </ul>
+          </SectionCard>
+
+          <SectionCard title="ماتریس آیزنهاور (اهم/فوری)">
+            <Eisenhower db={db} setDb={setDb} />
+          </SectionCard>
+        </div>
+      )
+    }
+
+    function Eisenhower({db, setDb}){
+      const types = [
+        {k:'IU', t:'فوری و مهم', c:'from-rose-200 to-rose-300'},
+        {k:'IN', t:'غیرفوری و مهم', c:'from-emerald-200 to-emerald-300'},
+        {k:'NU', t:'فوری و کم‌اهمیت', c:'from-amber-200 to-amber-300'},
+        {k:'NN', t:'غیرفوری و کم‌اهمیت', c:'from-slate-200 to-slate-300'},
+      ];
+      const add = (k)=>{ const t=prompt('کار جدید'); if(t){ setDb(v=>({...v, tasks:[{id:uid(), title:t, date:todayKey(), priority:k, tags:['eisenhower'], done:false}, ...v.tasks]})) } };
+      return (
+        <div className="grid md:grid-cols-2 gap-3">
+          {types.map(x=> (
+            <div key={x.k} className={`rounded-2xl p-3 bg-gradient-to-br ${x.c}`}>
+              <div className="flex justify-between items-center mb-2"><div className="font-bold">{x.t}</div><button className="text-xs bg-white/70 px-2 py-1 rounded-lg" onClick={()=>add(x.k)}>+ کار</button></div>
+              <ul className="space-y-2">
+                {db.tasks.filter(t=>t.priority===x.k).map(t=> <TaskItem key={t.id} t={t} setDb={setDb} />)}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    // ---- Calendar ----
+    function CalendarPage({db, setDb}){
+      const [month, setMonth] = useState(()=>{ const d=new Date(); return new Date(d.getFullYear(), d.getMonth(),1) });
+      const daysInMonth = (y,m)=> new Date(y, m+1, 0).getDate();
+      const y = month.getFullYear(), m=month.getMonth();
+      const n = daysInMonth(y,m);
+      const first = new Date(y,m,1).getDay();
+      const cells = [...Array(first)].map(()=>null).concat([...Array(n)].map((_,i)=> new Date(y,m,i+1)));
+      return (
+        <div className="glass rounded-2xl p-4 shadow-soft">
+          <div className="flex justify-between items-center mb-3">
+            <button className="px-3 py-2 bg-white/70 rounded-xl" onClick={()=> setMonth(new Date(y, m-1, 1))}>ماه قبل</button>
+            <div className="font-bold">{month.toLocaleDateString('fa-IR',{month:'long', year:'numeric'})}</div>
+            <button className="px-3 py-2 bg-white/70 rounded-xl" onClick={()=> setMonth(new Date(y, m+1, 1))}>ماه بعد</button>
+          </div>
+          <div className="grid grid-cols-7 gap-2 text-sm">
+            {['ی','د','س','چ','پ','ج','ش'].map(d=> <div key={d} className="text-center text-gray-500">{d}</div>)}
+            {cells.map((d,i)=> (
+              <div key={i} className={`min-h-[110px] rounded-xl p-2 bg-white/70 ${todayKey(d||new Date('2100-01-01'))===todayKey()? 'ring-2 ring-brand-400':''}`}>
+                {d && <div className="font-bold text-brand-700">{d.getDate()}</div>}
+                <ul className="mt-1 space-y-1">
+                  {d && db.tasks.filter(t=>t.date===todayKey(d)).slice(0,3).map(t=> <li key={t.id} className="text-xs bg-brand-50 rounded px-2 py-1">{t.title}</li>)}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+    }
+
+    // ---- Settings / Export-Import ----
+    function Settings({db, setDb, download, onImport}){
+      const [name, setName] = useState(db.user.name);
+      const [theme, setTheme] = useState(db.settings.theme);
+      const [floral, setFloral] = useState(db.settings.floral);
+      useEffect(()=>{ document.body.classList.toggle('bg-floral', floral); }, [floral]);
+      return (
+        <div className="grid md:grid-cols-2 gap-4">
+          <SectionCard title="پروفایل و ظاهر">
+            <div className="space-y-2">
+              <div className="grid md:grid-cols-3 gap-2 items-center">
+                <label>نام</label>
+                <input className="md:col-span-2 px-3 py-2 rounded-xl bg-white/70" value={name} onChange={e=>setName(e.target.value)} />
+              </div>
+              <div className="grid md:grid-cols-3 gap-2 items-center">
+                <label>تم</label>
+                <select className="md:col-span-2 px-3 py-2 rounded-xl bg-white/70" value={theme} onChange={e=>setTheme(e.target.value)}>
+                  <option value="pastel">پاستلی روشن</option>
+                  <option value="classic">کلاسیک</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <input id="floral" type="checkbox" checked={floral} onChange={e=>setFloral(e.target.checked)} />
+                <label htmlFor="floral">پس‌زمینه گل‌گلی</label>
+              </div>
+              <div className="pt-2">
+                <button className="px-4 py-2 rounded-xl bg-brand-500 text-white" onClick={()=> setDb(v=>({...v, user:{...v.user, name}, settings:{...v.settings, theme, floral}}))}>ذخیره</button>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="پشتیبان گیری و بازیابی">
+            <div className="flex flex-wrap items-center gap-3">
+              <button className="px-4 py-2 rounded-xl bg-gray-800 text-white" onClick={()=> download(`selmaz-planner-${todayKey()}.json`, JSON.stringify(db, null, 2))}>دانلود فایل پشتیبان</button>
+              <label className="px-4 py-2 rounded-xl bg-gray-100 cursor-pointer">
+                بازیابی از فایل
+                <input type="file" accept="application/json" className="hidden" onChange={e=> e.target.files[0] && onImport(e.target.files[0]) } />
+              </label>
+              <button className="px-4 py-2 rounded-xl bg-red-50 text-red-700" onClick={()=>{ if(confirm('همه داده‌ها پاک شود؟')) localStorage.removeItem('selmaz_planner'); }}>پاک کردن همه داده‌ها</button>
+            </div>
+            <div className="text-xs text-gray-500 mt-2">تمامی اطلاعات به طور خودکار در مرورگر شما ذخیره می‌شود.</div>
+          </SectionCard>
+        </div>
+      )
+    }
+
+    // ---------- Mount ----------
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
+```
+
+---
+
+.
